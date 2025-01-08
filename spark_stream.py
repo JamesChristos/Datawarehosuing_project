@@ -119,6 +119,9 @@ def connect_to_kafka(spark_conn):
         logging.error(f"Kafka DataFrame could not be created: {e}")
         return None
 
+
+
+
 def create_selection_df_from_kafka(spark_df):
     schema = StructType([
         StructField("user_id", StringType(), True),
