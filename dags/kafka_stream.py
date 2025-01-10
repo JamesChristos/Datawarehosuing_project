@@ -38,6 +38,8 @@ def format_data(res):
     data['state'] = res['location']['state']
     data['country'] = res['location']['country']
     data['postcode'] = res['location']['postcode']
+    data['coordinates_latitude'] = res['location']['coordinates']['latitude']
+    data['coordinates_longitude'] = res['location']['coordinates']['longitude']
 
     # contact table
     data['contact_id'] = hash(res['phone'])

@@ -3,6 +3,7 @@ from cassandra.cluster import Cluster
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import from_json, col, expr
 from pyspark.sql.types import StructType, StructField, StringType, IntegerType
+import uuid
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -38,7 +39,9 @@ def create_tables(session):
         city TEXT,
         state TEXT,
         country TEXT,
-        postcode TEXT
+        postcode TEXT,
+        coordinates_latitude DOUBLE,
+        coordinates_longitude DOUBLE
     );
     """)
     logging.info("Table 'location' created successfully!")
@@ -87,6 +90,22 @@ def create_tables(session):
     );
     """)
     logging.info("Table 'date_of_birth' created successfully!")
+    session.execute("""
+    CREATE TABLE IF NOT EXISTS spark_streams.user_location (
+    user_id UUID PRIMARY KEY,
+    gender TEXT,
+    nationality TEXT,
+    location_id TEXT,
+    street TEXT,
+    city TEXT,
+    state TEXT,
+    country TEXT,
+    postcode TEXT,
+    coordinates_latitude DOUBLE,
+    coordinates_longitude DOUBLE
+    );
+    """)
+    logging.info("Table 'user_location' created successfully!")
 
 def create_spark_connection():
     try:
@@ -119,6 +138,51 @@ def connect_to_kafka(spark_conn):
         logging.error(f"Kafka DataFrame could not be created: {e}")
         return None
 
+def join_and_insert_data():
+    try:
+        # Connect to Cassandra
+        cluster = Cluster(['localhost'])
+        session = cluster.connect('spark_streams')
+
+        # Prepare the insert query
+        insert_query = session.prepare("""
+            INSERT INTO user_location (
+                user_id, gender, nationality, location_id, street, city, state, country, postcode, coordinates_latitude, coordinates_longitude
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        """)
+
+        # Fetch all data from the 'user' table
+        user_query = "SELECT user_id, gender, nationality, location_id FROM user"
+        users = session.execute(user_query)
+
+        # Iterate over users and fetch location data for each location_id
+        for user in users:
+            location_query = f"SELECT street, city, state, country, postcode, coordinates_latitude, coordinates_longitude FROM location WHERE location_id = '{user.location_id}'"
+            location = session.execute(location_query).one()  # Fetch the corresponding location
+
+            if location:
+                # Insert joined data into the 'user_location' table
+                session.execute(
+                    insert_query,
+                    (
+                        uuid.UUID(str(user.user_id)),  # Ensure UUID is properly formatted
+                        user.gender,
+                        user.nationality,
+                        user.location_id,
+                        location.street,
+                        location.city,
+                        location.state,
+                        location.country,
+                        location.postcode,
+                        location.coordinates_latitude,
+                        location.coordinates_longitude
+                    )
+                )
+
+        logging.info("Data joined and inserted into 'user_location' successfully!")
+
+    except Exception as e:
+        logging.error(f"Failed to join tables: {e}")
 
 
 
@@ -149,7 +213,9 @@ def create_selection_df_from_kafka(spark_df):
         StructField("registered_date", StringType(), True),
         StructField("dob", StringType(), True),
         StructField("age", IntegerType(), True),
-        StructField("years_since_registration", IntegerType(), True)
+        StructField("years_since_registration", IntegerType(), True),
+        StructField("coordinates_latitude", StringType(), True),
+        StructField("coordinates_longitude", StringType(), True)
     ])
 
     try:
@@ -191,6 +257,7 @@ if __name__ == "__main__":
                 if session:
                     create_keyspace(session)
                     create_tables(session)
+                    join_and_insert_data()
 
                     # Split the data into two DataFrames
                     user = selection_df.select(
@@ -200,7 +267,7 @@ if __name__ == "__main__":
 
                     location = selection_df.select(
                         "location_id", "street", "city", "state", 
-                        "country", "postcode"
+                        "country", "postcode", "coordinates_latitude", "coordinates_longitude"
                     )
 
                     contact = selection_df.select(
