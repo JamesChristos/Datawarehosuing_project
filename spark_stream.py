@@ -1,121 +1,118 @@
 import logging
-from cassandra.cluster import Cluster
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import from_json, col, expr
-from pyspark.sql.types import StructType, StructField, StringType, IntegerType
-import uuid
+from pyspark.sql.functions import from_json, col
+from pyspark.sql.types import StructType, StructField, StringType, IntegerType, DoubleType
+import mysql.connector
+from pyspark.sql.functions import to_date
+from pyspark.sql.functions import to_timestamp
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 
-def create_keyspace(session):
-    session.execute("""
-        CREATE KEYSPACE IF NOT EXISTS spark_streams
-        WITH replication = {'class': 'SimpleStrategy', 'replication_factor': '1'};
-    """)
-    logging.info("Keyspace created successfully!")
+def create_mysql_connection():
+    try:
+        connection = mysql.connector.connect(
+            host='localhost',
+            user='root',
+            password='mysql',
+            database='datawarehousing'
+        )
+        logging.info("MySQL connection established successfully!")
+        return connection
+    except mysql.connector.Error as e:
+        logging.error(f"Failed to connect to MySQL: {e}")
+        return None
 
-def create_tables(session):
-    # Table for User Table
-    session.execute("""
-    CREATE TABLE IF NOT EXISTS spark_streams.user (
-        user_id UUID PRIMARY KEY,
-        dob_id TEXT,
-        registered_id TEXT,
-        location_id TEXT,
-        login_id UUID,
-        contact_id TEXT,
-        gender TEXT,
-        nationality TEXT
-    );
-    """)
-    logging.info("Table 'user' created successfully!")
+def create_tables(connection):
+    cursor = connection.cursor()
+    try:
+        cursor.execute("""
+        CREATE DATABASE IF NOT EXISTS datawarehousing;
+        """)
+        cursor.execute("USE datawarehousing;")
 
-    # Table for Location Table
-    session.execute("""
-    CREATE TABLE IF NOT EXISTS spark_streams.location (
-        location_id TEXT PRIMARY KEY,
-        street TEXT,
-        city TEXT,
-        state TEXT,
-        country TEXT,
-        postcode TEXT,
-        coordinates_latitude DOUBLE,
-        coordinates_longitude DOUBLE
-    );
-    """)
-    logging.info("Table 'location' created successfully!")
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user (
+            user_id VARCHAR(36) PRIMARY KEY,
+            dob_id VARCHAR(255),
+            registered_id VARCHAR(255),
+            location_id VARCHAR(255),
+            login_id VARCHAR(36),
+            contact_id VARCHAR(255),
+            gender VARCHAR(10),
+            nationality VARCHAR(50)
+        );
+        """)
+        logging.info("Table 'user' created successfully!")
 
-    # Table for Contact Table
-    session.execute("""
-    CREATE TABLE IF NOT EXISTS spark_streams.contact (
-        contact_id TEXT PRIMARY KEY,
-        phone TEXT,
-        cell TEXT,
-        email TEXT
-    );
-    """)
-    logging.info("Table 'contact' created successfully!")
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS location (
+            location_id VARCHAR(255) PRIMARY KEY,
+            street VARCHAR(255),
+            city VARCHAR(255),
+            state VARCHAR(255),
+            country VARCHAR(255),
+            postcode VARCHAR(50),
+            coordinates_latitude VARCHAR(255),
+            coordinates_longitude VARCHAR(255)
+        );
+        """)
+        logging.info("Table 'location' created successfully!")
 
-    # Table for Login Table
-    session.execute("""
-    CREATE TABLE IF NOT EXISTS spark_streams.login (
-        login_id UUID PRIMARY KEY,
-        username TEXT,
-        password TEXT,
-        salt TEXT,
-        md5 TEXT,
-        sha1 TEXT,
-        sha256 TEXT
-    );
-    """)
-    logging.info("Table 'login' created successfully!")
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS contact (
+            contact_id VARCHAR(255) PRIMARY KEY,
+            phone VARCHAR(20),
+            cell VARCHAR(20),
+            email VARCHAR(255)
+        );
+        """)
+        logging.info("Table 'contact' created successfully!")
 
-    # Table for Registered Table
-    session.execute("""
-    CREATE TABLE IF NOT EXISTS spark_streams.register (
-        registered_id TEXT PRIMARY KEY,
-        registered_date TEXT,
-        years_since_registration INT
-    );
-    """)
-    logging.info("Table 'register' created successfully!")
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS login (
+            login_id VARCHAR(36) PRIMARY KEY,
+            username VARCHAR(255),
+            password VARCHAR(255),
+            salt VARCHAR(255),
+            md5 VARCHAR(255),
+            sha1 VARCHAR(255),
+            sha256 VARCHAR(255)
+        );
+        """)
+        logging.info("Table 'login' created successfully!")
 
-    # Table for Date of Birth Table
-    session.execute("""
-    CREATE TABLE IF NOT EXISTS spark_streams.date_of_birth (
-        dob_id TEXT PRIMARY KEY,
-        dob TEXT,
-        age INT
-    );
-    """)
-    logging.info("Table 'date_of_birth' created successfully!")
-    session.execute("""
-    CREATE TABLE IF NOT EXISTS spark_streams.user_location (
-    user_id UUID PRIMARY KEY,
-    gender TEXT,
-    nationality TEXT,
-    location_id TEXT,
-    street TEXT,
-    city TEXT,
-    state TEXT,
-    country TEXT,
-    postcode TEXT,
-    coordinates_latitude DOUBLE,
-    coordinates_longitude DOUBLE
-    );
-    """)
-    logging.info("Table 'user_location' created successfully!")
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS register (
+            registered_id VARCHAR(255) PRIMARY KEY,
+            registered_date DATE,
+            years_since_registration INT
+        );
+        """)
+        logging.info("Table 'register' created successfully!")
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS date_of_birth (
+            dob_id VARCHAR(255) PRIMARY KEY,
+            dob DATE,
+            age INT
+        );
+        """)
+        logging.info("Table 'date_of_birth' created successfully!")
+
+        connection.commit()
+    except mysql.connector.Error as e:
+        logging.error(f"Failed to create tables: {e}")
+    finally:
+        cursor.close()
 
 def create_spark_connection():
     try:
         spark_conn = SparkSession.builder \
             .appName('SparkDataStreaming') \
             .config('spark.jars.packages', 
-                    "com.datastax.spark:spark-cassandra-connector_2.12:3.5.1,"
                     "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.4,"
-                    "org.scala-lang.modules:scala-collection-compat_2.12:2.11.0") \
-            .config('spark.cassandra.connection.host', 'localhost') \
+                    "mysql:mysql-connector-java:8.0.20") \
             .getOrCreate()
         spark_conn.sparkContext.setLogLevel("ERROR")
         logging.info("Spark connection created successfully!")
@@ -137,54 +134,6 @@ def connect_to_kafka(spark_conn):
     except Exception as e:
         logging.error(f"Kafka DataFrame could not be created: {e}")
         return None
-
-def join_and_insert_data():
-    try:
-        # Connect to Cassandra
-        cluster = Cluster(['localhost'])
-        session = cluster.connect('spark_streams')
-
-        # Prepare the insert query
-        insert_query = session.prepare("""
-            INSERT INTO user_location (
-                user_id, gender, nationality, location_id, street, city, state, country, postcode, coordinates_latitude, coordinates_longitude
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-        """)
-
-        # Fetch all data from the 'user' table
-        user_query = "SELECT user_id, gender, nationality, location_id FROM user"
-        users = session.execute(user_query)
-
-        # Iterate over users and fetch location data for each location_id
-        for user in users:
-            location_query = f"SELECT street, city, state, country, postcode, coordinates_latitude, coordinates_longitude FROM location WHERE location_id = '{user.location_id}'"
-            location = session.execute(location_query).one()  # Fetch the corresponding location
-
-            if location:
-                # Insert joined data into the 'user_location' table
-                session.execute(
-                    insert_query,
-                    (
-                        uuid.UUID(str(user.user_id)),  # Ensure UUID is properly formatted
-                        user.gender,
-                        user.nationality,
-                        user.location_id,
-                        location.street,
-                        location.city,
-                        location.state,
-                        location.country,
-                        location.postcode,
-                        location.coordinates_latitude,
-                        location.coordinates_longitude
-                    )
-                )
-
-        logging.info("Data joined and inserted into 'user_location' successfully!")
-
-    except Exception as e:
-        logging.error(f"Failed to join tables: {e}")
-
-
 
 def create_selection_df_from_kafka(spark_df):
     schema = StructType([
@@ -219,152 +168,72 @@ def create_selection_df_from_kafka(spark_df):
     ])
 
     try:
-        # Parse Kafka messages into DataFrame
         parsed_df = spark_df.selectExpr("CAST(value AS STRING)") \
-            .select(from_json(col("value"), schema).alias("data"))
-
-        # Flatten DataFrame
-        parsed_df = parsed_df.select("data.*")
+            .select(from_json(col("value"), schema).alias("data")) \
+            .select("data.*")
         logging.info("DataFrame schema applied successfully!")
         return parsed_df
     except Exception as e:
         logging.error(f"Failed to apply schema to DataFrame: {e}")
         return None
-    
-def create_cassandra_connection():
+
+def write_batch_to_mysql(batch_df, table_name):
     try:
-        cluster = Cluster(['localhost'])
-        session = cluster.connect()
-        logging.info("Cassandra connection established successfully!")
-        return session
+        batch_df.write \
+            .format("jdbc") \
+            .option("url", "jdbc:mysql://localhost:3306/datawarehousing") \
+            .option("dbtable", table_name) \
+            .option("user", "root") \
+            .option("password", "mysql") \
+            .option("driver", "com.mysql.cj.jdbc.Driver") \
+            .mode("append") \
+            .save()
+        logging.info(f"Batch successfully written to {table_name}.")
     except Exception as e:
-        logging.error(f"Failed to connect to Cassandra: {e}")
-        return None
+        logging.error(f"Failed to write batch to {table_name}: {e}")
+
+def process_stream_with_mysql(df, table_name):
+    """
+    Processes streaming DataFrame using foreachBatch and writes to MySQL.
+    """
+    query = df.writeStream \
+        .foreachBatch(lambda batch_df, batch_id: write_batch_to_mysql(batch_df, table_name)) \
+        .outputMode("append") \
+        .start()
+    return query
 
 if __name__ == "__main__":
-    # Create Spark connection
     spark_conn = create_spark_connection()
 
     if spark_conn:
-        # Connect to Kafka
         spark_df = connect_to_kafka(spark_conn)
 
         if spark_df:
-            # Process Kafka DataFrame
             selection_df = create_selection_df_from_kafka(spark_df)
-            if selection_df:
-                session = create_cassandra_connection()
-                if session:
-                    create_keyspace(session)
-                    create_tables(session)
-                    join_and_insert_data()
 
-                    # Split the data into two DataFrames
-                    user = selection_df.select(
-                        "user_id", "dob_id", "location_id", "login_id", 
-                        "contact_id", "gender", "nationality", "registered_id"
-                    )
+            if selection_df is not None:
+                connection = create_mysql_connection()
+                if connection:
+                    create_tables(connection)
 
-                    location = selection_df.select(
-                        "location_id", "street", "city", "state", 
-                        "country", "postcode", "coordinates_latitude", "coordinates_longitude"
-                    )
+                # Process each table
+                user = selection_df.select("user_id", "dob_id", "registered_id", "location_id", "login_id", "contact_id", "gender", "nationality")
+                user_query = process_stream_with_mysql(user, "user")
 
-                    contact = selection_df.select(
-                        "contact_id", "phone", "cell", "email"
-                    )
+                location = selection_df.select("location_id", "street", "city", "state", "country", "postcode", "coordinates_latitude", "coordinates_longitude")
+                location_query = process_stream_with_mysql(location, "location")
 
-                    login = selection_df.select(
-                        "login_id", "username", "password", "salt",
-                        "md5", "sha1", "sha256"
-                    )
+                contact = selection_df.select("contact_id", "phone", "cell", "email")
+                contact_query = process_stream_with_mysql(contact, "contact")
 
-                    register = selection_df.select(
-                        "registered_id", "registered_date", "years_since_registration"
-                    )
+                login = selection_df.select("login_id", "username", "password", "salt", "md5", "sha1", "sha256")
+                login_query = process_stream_with_mysql(login, "login")
 
-                    dob = selection_df.select(
-                        "dob_id", "dob", "age"
-                    )
+                register = selection_df.select("registered_id", to_timestamp(col("registered_date"), "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").alias("registered_date"), "years_since_registration")
+                register_query = process_stream_with_mysql(register, "register")
 
-                    # Write personal details to Cassandra
-                    try:
-                        user_stream_query = (user.writeStream
-                                                 .format("org.apache.spark.sql.cassandra")
-                                                 .option('checkpointLocation', '/tmp/personal_checkpoint')
-                                                 .option('keyspace', 'spark_streams')
-                                                 .option('table', 'user')
-                                                 .outputMode("append")
-                                                 .start())
-                        logging.info("Streaming personal details started successfully!")
-                    except Exception as e:
-                        logging.error(f"Personal details streaming query failed: {e}")
+                date_of_birth = selection_df.select("dob_id", to_timestamp(col("dob"), "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").alias("dob"), "age")
+                dob_query = process_stream_with_mysql(date_of_birth, "date_of_birth")
 
-                    # Write location details to Cassandra
-                    try:
-                        location_stream_query = (location.writeStream
-                                                 .format("org.apache.spark.sql.cassandra")
-                                                 .option('checkpointLocation', '/tmp/location_checkpoint')
-                                                 .option('keyspace', 'spark_streams')
-                                                 .option('table', 'location')
-                                                 .outputMode("append")
-                                                 .start())
-                        logging.info("Streaming location details started successfully!")
-                    except Exception as e:
-                        logging.error(f"Location details streaming query failed: {e}")
-
-                    try:
-                        contact_stream_query = (contact.writeStream
-                                                 .format("org.apache.spark.sql.cassandra")
-                                                 .option('checkpointLocation', '/tmp/contact_checkpoint')
-                                                 .option('keyspace', 'spark_streams')
-                                                 .option('table', 'contact')
-                                                 .outputMode("append")
-                                                 .start())
-                        logging.info("Streaming contact details started successfully!")
-                    except Exception as e:
-                        logging.error(f"Contact details streaming query failed: {e}")
-
-                    try:
-                        login_stream_query = (login.writeStream
-                                                 .format("org.apache.spark.sql.cassandra")
-                                                 .option('checkpointLocation', '/tmp/login_checkpoint')
-                                                 .option('keyspace', 'spark_streams')
-                                                 .option('table', 'login')
-                                                 .outputMode("append")
-                                                 .start())
-                        logging.info("Streaming login details started successfully!")
-                    except Exception as e:
-                        logging.error(f"Login details streaming query failed: {e}")
-
-                    try:
-                        register_stream_query = (register.writeStream
-                                                 .format("org.apache.spark.sql.cassandra")
-                                                 .option('checkpointLocation', '/tmp/register_checkpoint')
-                                                 .option('keyspace', 'spark_streams')
-                                                 .option('table', 'register')
-                                                 .outputMode("append")
-                                                 .start())
-                        logging.info("Streaming register details started successfully!")
-                    except Exception as e:
-                        logging.error(f"Register details streaming query failed: {e}")
-
-                    try:
-                        dob_stream_query = (dob.writeStream
-                                                 .format("org.apache.spark.sql.cassandra")
-                                                 .option('checkpointLocation', '/tmp/dob_checkpoint')
-                                                 .option('keyspace', 'spark_streams')
-                                                 .option('table', 'date_of_birth')
-                                                 .outputMode("append")
-                                                 .start())
-                        logging.info("Streaming date of birth details started successfully!")
-                    except Exception as e:
-                        logging.error(f"Date of birth details streaming query failed: {e}")
-
-                    # Await termination
-                    user_stream_query.awaitTermination()
-                    location_stream_query.awaitTermination()
-                    contact_stream_query.awaitTermination()
-                    login_stream_query.awaitTermination()
-                    register_stream_query.awaitTermination()
-                    dob_stream_query.awaitTermination()
+                # Await termination for all queries
+                spark_conn.streams.awaitAnyTermination()
